@@ -1,0 +1,85 @@
+# Bodega Inteligente - VM3: bases de datos (subred privada, sin IP pública).
+# Uso: ./generar_env.sh  ->  docker compose up -d --build
+# 'seed' carga los datos ficticios una sola vez y termina (no duplica si se repite).
+name: bodega-db
+
+x-comun: &comun
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+  mysql:                     # inventario_db + proveedores_db
+    <<: *comun
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Falta MYSQL_ROOT_PASSWORD en .env}
+      MYSQL_USER: bodega
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Falta MYSQL_PASSWORD en .env}
+    ports: ["3306:3306"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  postgres:                  # ventas_db
+    <<: *comun
+    image: postgres:16
+    environment:
+      POSTGRES_USER: bodega
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Falta POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ventas_db
+    ports: ["5432:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bodega -d ventas_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  mongo:                     # prediccion_db
+    <<: *comun
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Falta MONGO_ROOT_PASSWORD en .env}
+      MONGO_APP_PASSWORD: ${MONGO_PASSWORD:?Falta MONGO_PASSWORD en .env}
+    ports: ["27017:27017"]
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  seed:                      # carga masiva de fake data (una vez) y termina
+    build: ./seed
+    restart: "no"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MONGO_URI: mongodb://bodega:${MONGO_PASSWORD}@mongo:27017/prediccion_db?authSource=prediccion_db
+      MONGO_DB: prediccion_db
+    depends_on:
+      mysql: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+      mongo: {condition: service_healthy}
+
+volumes:
+  mysql_data:
+  postgres_data:
+  mongo_data:
